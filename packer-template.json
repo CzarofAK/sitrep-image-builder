@@ -1,0 +1,107 @@
+{
+  "variables": {
+    "image_name": "sitrep-offline",
+    "image_version": "1.0.0",
+    "base_image_url": "https://downloads.raspberrypi.org/raspios_lite_arm64/images/raspios_lite_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64-lite.img.xz",
+    "wifi_ssid": "SitRep-Emergency",
+    "wifi_password": "emergency123"
+  },
+  "builders": [
+    {
+      "type": "arm",
+      "name": "raspberrypi",
+      "file_urls": ["{{user `base_image_url`}}"],
+      "file_checksum_type": "sha256",
+      "file_target_extension": "xz",
+      "image_build_method": "resize",
+      "image_path": "output/{{user `image_name`}}-{{user `image_version`}}.img",
+      "image_size": "8G",
+      "image_type": "dos",
+      "image_partitions": [
+        {
+          "name": "boot",
+          "type": "c",
+          "start_sector": "8192",
+          "filesystem": "vfat",
+          "size": "256M",
+          "mountpoint": "/boot"
+        },
+        {
+          "name": "root",
+          "type": "83",
+          "start_sector": "532480",
+          "filesystem": "ext4",
+          "size": "0",
+          "mountpoint": "/"
+        }
+      ],
+      "qemu_binary": "qemu-aarch64-static",
+      "qemu_args": [
+        "-cpu", "cortex-a72"
+      ]
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "shell",
+      "inline": [
+        "echo 'Aktualisiere System...'",
+        "apt-get update",
+        "DEBIAN_FRONTEND=noninteractive apt-get upgrade -y"
+      ]
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "echo 'Installiere Docker...'",
+        "curl -fsSL https://get.docker.com | sh",
+        "systemctl enable docker",
+        "usermod -aG docker pi"
+      ]
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "echo 'Installiere Basis-Pakete...'",
+        "apt-get install -y hostapd dnsmasq iptables avahi-daemon git curl jq"
+      ]
+    },
+    {
+      "type": "file",
+      "source": "sitrep-image-builder/",
+      "destination": "/opt/sitrep-installer/"
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "echo 'Lade Docker Images...'",
+        "cd /opt/sitrep-installer/docker-images",
+        "bash load-images.sh"
+      ]
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "echo 'Konfiguriere Autostart...'",
+        "echo '@reboot root /opt/sitrep-installer/install.sh' >> /etc/crontab"
+      ]
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "echo 'Cleanup...'",
+        "apt-get clean",
+        "rm -rf /var/lib/apt/lists/*",
+        "rm -rf /tmp/*",
+        "history -c"
+      ]
+    }
+  ],
+  "post-processors": [
+    {
+      "type": "compress",
+      "output": "output/{{user `image_name`}}-{{user `image_version`}}.img.zip",
+      "compression_level": 6
+    }
+  ]
+}
