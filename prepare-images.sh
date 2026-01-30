@@ -21,48 +21,124 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
+info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+
+# Funktion: Docker installieren
+install_docker() {
+    echo ""
+    info "Installiere Docker..."
+    echo ""
+
+    # Docker Installation via offizielles Script
+    curl -fsSL https://get.docker.com | sh
+
+    # Benutzer zur Docker-Gruppe hinzufügen
+    sudo usermod -aG docker $USER
+
+    # Docker starten
+    sudo systemctl enable docker
+    sudo systemctl start docker
+
+    echo ""
+    info "Docker wurde installiert!"
+}
+
+# Funktion: Docker-Compose installieren
+install_docker_compose() {
+    echo ""
+    info "Installiere Docker Compose..."
+    echo ""
+
+    # Versuche docker-compose-plugin zu installieren
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update
+        sudo apt-get install -y docker-compose-plugin
+    else
+        # Fallback: Standalone docker-compose
+        COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+        sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        sudo chmod +x /usr/local/bin/docker-compose
+    fi
+
+    echo ""
+    info "Docker Compose wurde installiert!"
+}
 
 # Prüfe ob Docker installiert ist
 if ! command -v docker &> /dev/null; then
-    error "Docker ist nicht installiert!"
+    warn "Docker ist nicht installiert!"
     echo ""
-    echo "Bitte installiere Docker zuerst:"
-    echo "  curl -fsSL https://get.docker.com | sh"
-    echo "  sudo usermod -aG docker \$USER"
-    echo "  # Dann neu einloggen oder: newgrp docker"
+    read -p "Soll Docker jetzt installiert werden? (j/n): " -n 1 -r
     echo ""
-    exit 1
+    if [[ $REPLY =~ ^[Jj]$ ]]; then
+        install_docker
+        # Hinweis für Gruppenänderung
+        echo ""
+        warn "WICHTIG: Du musst dich neu einloggen, damit die Docker-Gruppe aktiv wird!"
+        echo "Alternativ kannst du jetzt 'newgrp docker' ausführen."
+        echo ""
+        read -p "Drücke Enter um fortzufahren (mit sudo) oder Ctrl+C zum Abbrechen..."
+        # Führe Docker-Befehle mit sudo aus falls nötig
+        DOCKER_CMD="sudo docker"
+        DOCKER_COMPOSE_CMD="sudo docker-compose"
+    else
+        error "Docker wird benötigt. Abbruch."
+        exit 1
+    fi
+else
+    DOCKER_CMD="docker"
+    DOCKER_COMPOSE_CMD="docker-compose"
 fi
 
 # Prüfe ob Docker-Compose installiert ist
-if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-    error "Docker Compose ist nicht installiert!"
+if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null 2>&1; then
+    warn "Docker Compose ist nicht installiert!"
     echo ""
-    echo "Bitte installiere Docker Compose:"
-    echo "  sudo apt-get install docker-compose-plugin"
-    echo "  # Oder: sudo apt-get install docker-compose"
+    read -p "Soll Docker Compose jetzt installiert werden? (j/n): " -n 1 -r
     echo ""
-    exit 1
+    if [[ $REPLY =~ ^[Jj]$ ]]; then
+        install_docker_compose
+    else
+        error "Docker Compose wird benötigt. Abbruch."
+        exit 1
+    fi
+fi
+
+# Bestimme Docker-Compose Befehl (standalone oder plugin)
+if command -v docker-compose &> /dev/null; then
+    # Standalone docker-compose
+    if [ "$DOCKER_CMD" = "sudo docker" ]; then
+        DOCKER_COMPOSE_CMD="sudo docker-compose"
+    else
+        DOCKER_COMPOSE_CMD="docker-compose"
+    fi
+elif $DOCKER_CMD compose version &> /dev/null 2>&1; then
+    # Docker Compose Plugin
+    DOCKER_COMPOSE_CMD="$DOCKER_CMD compose"
 fi
 
 # Prüfe ob Docker läuft
-if ! docker info &> /dev/null; then
-    error "Docker läuft nicht oder du hast keine Berechtigung!"
+if ! $DOCKER_CMD info &> /dev/null; then
+    warn "Docker läuft nicht!"
     echo ""
-    echo "Versuche:"
-    echo "  sudo systemctl start docker"
-    echo "  # Oder füge deinen Benutzer zur Docker-Gruppe hinzu:"
-    echo "  sudo usermod -aG docker \$USER"
-    echo "  # Dann neu einloggen"
+    read -p "Soll Docker jetzt gestartet werden? (j/n): " -n 1 -r
     echo ""
-    exit 1
+    if [[ $REPLY =~ ^[Jj]$ ]]; then
+        sudo systemctl start docker
+        sleep 2
+        if ! $DOCKER_CMD info &> /dev/null; then
+            error "Docker konnte nicht gestartet werden."
+            exit 1
+        fi
+    else
+        error "Docker muss laufen. Abbruch."
+        exit 1
+    fi
 fi
 
 echo -e "${GREEN}[OK]${NC} Docker ist verfügbar"
 echo ""
-
-info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
 # Erstelle Verzeichnisse
 mkdir -p "$IMAGES_DIR"
@@ -114,9 +190,9 @@ for image in "${DOCKER_IMAGES[@]}"; do
     info "Verarbeite: $image"
     
     # Pull image
-    if docker pull $image; then
+    if $DOCKER_CMD pull $image; then
         # Save image
-        docker save $image | gzip > "$IMAGES_DIR/${image_name}.tar.gz"
+        $DOCKER_CMD save $image | gzip > "$IMAGES_DIR/${image_name}.tar.gz"
         info "✓ Gespeichert: ${image_name}.tar.gz"
     else
         warn "⚠ Konnte $image nicht laden"
@@ -128,16 +204,16 @@ done
 info "Baue lokale Images..."
 if [ -f "$SCRIPT_DIR/sitrep/docker-compose.yml" ]; then
     cd "$SCRIPT_DIR/sitrep"
-    docker-compose build
-    
+    $DOCKER_COMPOSE_CMD build
+
     # Exportiere selbst-gebaute Images
-    LOCAL_IMAGES=$(docker-compose config | grep 'image:' | awk '{print $2}' | grep -v '^gcr.io\|^ghcr.io\|^quay.io' || true)
-    
+    LOCAL_IMAGES=$($DOCKER_COMPOSE_CMD config | grep 'image:' | awk '{print $2}' | grep -v '^gcr.io\|^ghcr.io\|^quay.io' || true)
+
     for image in $LOCAL_IMAGES; do
         if [ ! -z "$image" ]; then
             image_name=$(echo $image | tr '/:' '_')
             info "Exportiere lokales Image: $image"
-            docker save $image | gzip > "$IMAGES_DIR/${image_name}.tar.gz"
+            $DOCKER_CMD save $image | gzip > "$IMAGES_DIR/${image_name}.tar.gz"
         fi
     done
 fi
