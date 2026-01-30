@@ -192,54 +192,109 @@ EOF
 
 chmod 600 "$CONFIG_DIR/sitrep.env"
 
-# Erstelle angepasste docker-compose.yml für offline Betrieb
+# Erstelle .env Symlink im Install-Verzeichnis (für docker-compose)
+ln -sf "$CONFIG_DIR/sitrep.env" "$INSTALL_DIR/.env"
+
+# Erstelle vollständige docker-compose.yml für offline Betrieb
+# (ersetzt die minimale Version aus dem Repository)
 info "Erstelle Docker Compose Konfiguration..."
-cat > "$INSTALL_DIR/docker-compose.override.yml" <<'EOF'
-version: '3.8'
+
+# Entferne eventuell vorhandene override.yml (verursacht Fehler)
+rm -f "$INSTALL_DIR/docker-compose.override.yml"
+
+# Hole aktuelle IP-Adresse
+CURRENT_IP=$(hostname -I | awk '{print $1}')
+
+cat > "$INSTALL_DIR/docker-compose.yml" <<EOF
+name: sitrep
 
 services:
-  # Dex für lokale Authentifizierung
-  dex:
-    image: ghcr.io/dexidp/dex:v2.37.0
-    command: dex serve /etc/dex/config.yaml
+  # SitRep Frontend + Backend (vollständiges Image)
+  sitrep:
+    image: ghcr.io/f-eld-ch/sitrep:26.1.0
     ports:
-      - "5556:5556"
-    volumes:
-      - /etc/sitrep/dex-config.yaml:/etc/dex/config.yaml:ro
+      - "3000:8080"
+    environment:
+      - GRAPHQL_ENDPOINT=http://graphql-engine:8080/v1/graphql
+      - OIDC_ISSUER_URL=http://dex:5556/dex
+      - PUBLIC_URL=http://${CURRENT_IP}:3000
+    depends_on:
+      graphql-engine:
+        condition: service_healthy
+      dex:
+        condition: service_started
     networks:
       - sitrep
     restart: unless-stopped
 
-  # OAuth2 Proxy
-  oauth2-proxy:
-    environment:
-      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4180
-      - OAUTH2_PROXY_UPSTREAMS=http://hasura:8080
-      - OAUTH2_PROXY_EMAIL_DOMAINS=*
-      - OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true
+  # Hasura GraphQL Engine
+  graphql-engine:
+    image: sitrep-graphql-engine:latest
     ports:
-      - "4180:4180"
+      - "8080:8080"
+    environment:
+      HASURA_GRAPHQL_DATABASE_URL: postgres://postgres:\${POSTGRES_PASSWORD}@postgres:5432/postgres
+      HASURA_GRAPHQL_METADATA_DATABASE_URL: postgres://postgres:\${POSTGRES_PASSWORD}@postgres:5432/postgres
+      HASURA_GRAPHQL_ADMIN_SECRET: \${HASURA_GRAPHQL_ADMIN_SECRET}
+      HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
+      HASURA_GRAPHQL_DEV_MODE: "false"
+      HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup, http-log, webhook-log, websocket-log
+      HASURA_GRAPHQL_UNAUTHORIZED_ROLE: anonymous
+      HASURA_GRAPHQL_JWT_SECRET: '{"jwk_url": "http://dex:5556/dex/keys", "header":{"type":"Authorization"}, "claims_map":{"x-hasura-user-id":{"path":"$$.sub"},"x-hasura-email":{"path":"$$.email"},"x-hasura-allowed-roles":["viewer","editor"],"x-hasura-default-role":"editor"}}'
     depends_on:
-      - dex
-      - hasura
+      postgres:
+        condition: service_healthy
+      dex:
+        condition: service_started
+    networks:
+      - sitrep
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Hasura mit angepassten Einstellungen
-  hasura:
+  # PostgreSQL Datenbank
+  postgres:
+    image: postgres:16
     environment:
-      - HASURA_GRAPHQL_UNAUTHORIZED_ROLE=anonymous
-      - HASURA_GRAPHQL_ENABLE_REMOTE_SCHEMA_PERMISSIONS=true
-
-  # UI angepasst für lokalen Zugriff
-  ui:
-    environment:
-      - REACT_APP_GRAPHQL_ENDPOINT=http://${SITREP_HOST:-192.168.50.1}:8080/v1/graphql
-      - REACT_APP_OFFLINE_MODE=true
+      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     ports:
-      - "3000:80"
+      - "5432:5432"
+    networks:
+      - sitrep
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Dex Identity Provider
+  dex:
+    image: dexidp/dex:latest
+    command: dex serve /etc/dex/config.yaml
+    ports:
+      - "5556:5556"
+      - "5557:5557"
+    volumes:
+      - /etc/sitrep/dex-config.yaml:/etc/dex/config.yaml:ro
+      - dex_data:/var/dex
+    networks:
+      - sitrep
+    restart: unless-stopped
 
 networks:
   sitrep:
     driver: bridge
+
+volumes:
+  postgres_data:
+  dex_data:
 EOF
 
 # Hole aktuelle IP-Adresse für Dex Konfiguration
@@ -386,9 +441,9 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$CONFIG_DIR/sitrep.env
-ExecStartPre=-$COMPOSE_CMD down
-ExecStart=$COMPOSE_CMD up -d
-ExecStop=$COMPOSE_CMD down
+ExecStartPre=-$COMPOSE_CMD --env-file $CONFIG_DIR/sitrep.env down
+ExecStart=$COMPOSE_CMD --env-file $CONFIG_DIR/sitrep.env up -d
+ExecStop=$COMPOSE_CMD --env-file $CONFIG_DIR/sitrep.env down
 TimeoutStartSec=0
 
 [Install]
