@@ -156,79 +156,147 @@ fi
 
 cd "$SCRIPT_DIR/sitrep"
 
-# Liste der benötigten Images
-DOCKER_IMAGES=(
-    # SitRep spezifische Images
-    "ghcr.io/f-eld-ch/sitrep/ui:latest"
-    "ghcr.io/f-eld-ch/sitrep/server:latest"
-    
-    # Hasura
-    "hasura/graphql-engine:v2.38.0"
-    
-    # PostgreSQL
-    "postgres:15-alpine"
-    
-    # Redis
-    "redis:7-alpine"
-    
-    # Dex für lokale Authentifizierung
-    "ghcr.io/dexidp/dex:v2.37.0"
-    
-    # OAuth2 Proxy
-    "quay.io/oauth2-proxy/oauth2-proxy:v7.5.1"
-    
-    # Flipt (Feature Flags)
-    "flipt/flipt:latest"
-)
+# Funktion: Image sicher exportieren (nur wenn es existiert)
+export_image() {
+    local image="$1"
+    local image_name=$(echo "$image" | tr '/:' '_')
 
-info "Lade und exportiere Docker Images..."
+    # Prüfe ob Image existiert
+    if $DOCKER_CMD image inspect "$image" &> /dev/null; then
+        info "Exportiere: $image"
+        $DOCKER_CMD save "$image" | gzip > "$IMAGES_DIR/${image_name}.tar.gz"
+
+        # Prüfe ob Export erfolgreich war (Datei > 1KB)
+        local filesize=$(stat -c%s "$IMAGES_DIR/${image_name}.tar.gz" 2>/dev/null || echo "0")
+        if [ "$filesize" -gt 1000 ]; then
+            info "✓ Gespeichert: ${image_name}.tar.gz ($(numfmt --to=iec $filesize))"
+            return 0
+        else
+            warn "⚠ Export fehlgeschlagen für $image (Datei zu klein)"
+            rm -f "$IMAGES_DIR/${image_name}.tar.gz"
+            return 1
+        fi
+    else
+        warn "⚠ Image nicht gefunden: $image"
+        return 1
+    fi
+}
+
+# Extrahiere alle Images aus docker-compose.yml
+info "Analysiere docker-compose.yml..."
+if [ -f "$SCRIPT_DIR/sitrep/docker-compose.yml" ]; then
+    cd "$SCRIPT_DIR/sitrep"
+
+    # Hole alle Images aus docker-compose config
+    ALL_IMAGES=$($DOCKER_COMPOSE_CMD config 2>/dev/null | grep -E '^\s+image:' | awk '{print $2}' | sort -u || true)
+
+    # Trenne in externe und lokale Images
+    EXTERNAL_IMAGES=""
+    LOCAL_BUILD_SERVICES=""
+
+    for image in $ALL_IMAGES; do
+        # Externe Images enthalten meist einen Registry-Pfad oder bekannte Prefixe
+        if [[ "$image" == *"ghcr.io/f-eld-ch"* ]]; then
+            # SitRep eigene Images - müssen gebaut werden
+            LOCAL_BUILD_SERVICES="$LOCAL_BUILD_SERVICES $image"
+        elif [[ "$image" == *"/"* ]] || [[ "$image" == *":"* ]]; then
+            # Externe Images (haben / oder : im Namen)
+            EXTERNAL_IMAGES="$EXTERNAL_IMAGES $image"
+        fi
+    done
+
+    echo ""
+    info "Gefundene externe Images:"
+    for img in $EXTERNAL_IMAGES; do
+        echo "  - $img"
+    done
+    echo ""
+else
+    error "docker-compose.yml nicht gefunden!"
+    exit 1
+fi
+
+# Schritt 1: Baue alle lokalen Images
+info "Baue SitRep Images aus Source Code..."
 echo ""
 
-# Pull und Save Images
-for image in "${DOCKER_IMAGES[@]}"; do
-    image_name=$(echo $image | tr '/:' '_')
+cd "$SCRIPT_DIR/sitrep"
+
+# Baue alle Services die ein build: haben
+if $DOCKER_COMPOSE_CMD build; then
+    info "✓ Lokale Images erfolgreich gebaut"
+else
+    warn "⚠ Einige Images konnten nicht gebaut werden"
+fi
+echo ""
+
+# Schritt 2: Pulle alle externen Images
+info "Lade externe Docker Images..."
+echo ""
+
+for image in $EXTERNAL_IMAGES; do
     info "Verarbeite: $image"
-    
-    # Pull image
-    if $DOCKER_CMD pull $image; then
-        # Save image
-        $DOCKER_CMD save $image | gzip > "$IMAGES_DIR/${image_name}.tar.gz"
-        info "✓ Gespeichert: ${image_name}.tar.gz"
+
+    if $DOCKER_CMD pull "$image"; then
+        info "✓ Geladen: $image"
     else
         warn "⚠ Konnte $image nicht laden"
     fi
     echo ""
 done
 
-# Build lokale Images falls nötig
-info "Baue lokale Images..."
-if [ -f "$SCRIPT_DIR/sitrep/docker-compose.yml" ]; then
-    cd "$SCRIPT_DIR/sitrep"
-    $DOCKER_COMPOSE_CMD build
+# Schritt 3: Exportiere alle Images
+info "Exportiere alle Docker Images..."
+echo ""
 
-    # Exportiere selbst-gebaute Images
-    LOCAL_IMAGES=$($DOCKER_COMPOSE_CMD config | grep 'image:' | awk '{print $2}' | grep -v '^gcr.io\|^ghcr.io\|^quay.io' || true)
+# Hole alle geladenen/gebauten Images nochmal frisch
+cd "$SCRIPT_DIR/sitrep"
+FINAL_IMAGES=$($DOCKER_COMPOSE_CMD config 2>/dev/null | grep -E '^\s+image:' | awk '{print $2}' | sort -u || true)
 
-    for image in $LOCAL_IMAGES; do
-        if [ ! -z "$image" ]; then
-            image_name=$(echo $image | tr '/:' '_')
-            info "Exportiere lokales Image: $image"
-            $DOCKER_CMD save $image | gzip > "$IMAGES_DIR/${image_name}.tar.gz"
-        fi
-    done
+EXPORT_COUNT=0
+EXPORT_FAILED=0
+
+for image in $FINAL_IMAGES; do
+    if export_image "$image"; then
+        ((EXPORT_COUNT++))
+    else
+        ((EXPORT_FAILED++))
+    fi
+    echo ""
+done
+
+# Zusätzlich: Exportiere das lokal gebaute sitrep-graphql-engine falls vorhanden
+if $DOCKER_CMD image inspect "sitrep-graphql-engine:latest" &> /dev/null; then
+    export_image "sitrep-graphql-engine:latest"
+    ((EXPORT_COUNT++))
 fi
 
 # Erstelle Liste der gespeicherten Images
 info "Erstelle Image-Liste..."
+
+# Zähle nur gültige tar.gz Dateien (> 1KB)
+VALID_FILES=$(find "$IMAGES_DIR" -name "*.tar.gz" -size +1k 2>/dev/null | wc -l)
+
 cat > "$IMAGES_DIR/image-list.txt" <<EOF
 # SitRep Docker Images
 # Generiert: $(date)
 # Für Offline-Installation
 
-$(ls -lh "$IMAGES_DIR"/*.tar.gz | awk '{print $9, $5}')
-
-Gesamt: $(du -sh "$IMAGES_DIR" | awk '{print $1}')
 EOF
+
+# Liste nur Dateien > 1KB auf
+for f in "$IMAGES_DIR"/*.tar.gz; do
+    if [ -f "$f" ]; then
+        filesize=$(stat -c%s "$f" 2>/dev/null || echo "0")
+        if [ "$filesize" -gt 1000 ]; then
+            echo "$(basename "$f") $(numfmt --to=iec $filesize)" >> "$IMAGES_DIR/image-list.txt"
+        fi
+    fi
+done
+
+echo "" >> "$IMAGES_DIR/image-list.txt"
+echo "Gesamt: $(du -sh "$IMAGES_DIR" | awk '{print $1}')" >> "$IMAGES_DIR/image-list.txt"
+echo "Anzahl Images: $VALID_FILES" >> "$IMAGES_DIR/image-list.txt"
 
 # Erstelle Load-Skript
 cat > "$IMAGES_DIR/load-images.sh" <<'LOADSCRIPT'
@@ -240,8 +308,14 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 echo "Lade Docker Images..."
 for image_file in "$SCRIPT_DIR"/*.tar.gz; do
     if [ -f "$image_file" ]; then
-        echo "Lade: $(basename $image_file)"
-        gunzip -c "$image_file" | docker load
+        # Überspringe leere/defekte Dateien
+        filesize=$(stat -c%s "$image_file" 2>/dev/null || echo "0")
+        if [ "$filesize" -gt 1000 ]; then
+            echo "Lade: $(basename $image_file)"
+            gunzip -c "$image_file" | docker load
+        else
+            echo "Überspringe (ungültig): $(basename $image_file)"
+        fi
     fi
 done
 echo "Fertig!"
@@ -249,7 +323,15 @@ LOADSCRIPT
 
 chmod +x "$IMAGES_DIR/load-images.sh"
 
+echo ""
+echo "=================================="
 info "Image-Vorbereitung abgeschlossen!"
+echo "=================================="
+echo ""
+echo -e "${GREEN}Erfolgreich exportiert:${NC} $EXPORT_COUNT Images"
+if [ "$EXPORT_FAILED" -gt 0 ]; then
+    echo -e "${YELLOW}Fehlgeschlagen:${NC} $EXPORT_FAILED Images"
+fi
 echo ""
 cat "$IMAGES_DIR/image-list.txt"
 echo ""
