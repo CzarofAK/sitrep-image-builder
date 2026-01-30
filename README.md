@@ -29,7 +29,7 @@ Diese Schritte führst du auf einem Computer mit Internet aus:
 
 ### 1. Repository klonen
 ```bash
-git clone https://github.com/yourusername/sitrep-image-builder.git
+git clone https://github.com/czarofak/sitrep-image-builder.git
 cd sitrep-image-builder
 ```
 
