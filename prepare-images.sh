@@ -9,6 +9,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IMAGES_DIR="$SCRIPT_DIR/docker-images"
 SITREP_REPO="https://github.com/f-eld-ch/sitrep.git"
 SITREP_BRANCH="develop"
+SITREP_IMAGE="ghcr.io/f-eld-ch/sitrep:26.1.0"
 
 echo "=================================="
 echo "SitRep Image Preparation"
@@ -308,6 +309,22 @@ for image in $EXTERNAL_IMAGES; do
     echo ""
 done
 
+# Zusätzlich: Lade das vollständige SitRep Image (enthält UI + Server)
+SITREP_IMAGE="ghcr.io/f-eld-ch/sitrep:26.1.0"
+info "Lade vollständiges SitRep Image (mit UI)..."
+if $DOCKER_CMD pull "$SITREP_IMAGE"; then
+    info "✓ SitRep Image geladen: $SITREP_IMAGE"
+else
+    warn "⚠ Konnte SitRep Image nicht laden: $SITREP_IMAGE"
+    warn "  Versuche alternative Version..."
+    # Fallback auf latest
+    if $DOCKER_CMD pull "ghcr.io/f-eld-ch/sitrep:latest"; then
+        SITREP_IMAGE="ghcr.io/f-eld-ch/sitrep:latest"
+        info "✓ SitRep Image geladen: $SITREP_IMAGE"
+    fi
+fi
+echo ""
+
 # Schritt 3: Exportiere alle Images
 info "Exportiere alle Docker Images..."
 echo ""
@@ -331,6 +348,15 @@ done
 # Zusätzlich: Exportiere das lokal gebaute sitrep-graphql-engine falls vorhanden
 if $DOCKER_CMD image inspect "sitrep-graphql-engine:latest" &> /dev/null; then
     export_image "sitrep-graphql-engine:latest"
+    ((EXPORT_COUNT++))
+fi
+
+# Exportiere das vollständige SitRep Image
+if $DOCKER_CMD image inspect "$SITREP_IMAGE" &> /dev/null; then
+    export_image "$SITREP_IMAGE"
+    ((EXPORT_COUNT++))
+elif $DOCKER_CMD image inspect "ghcr.io/f-eld-ch/sitrep:latest" &> /dev/null; then
+    export_image "ghcr.io/f-eld-ch/sitrep:latest"
     ((EXPORT_COUNT++))
 fi
 
