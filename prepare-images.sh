@@ -9,7 +9,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IMAGES_DIR="$SCRIPT_DIR/docker-images"
 SITREP_REPO="https://github.com/f-eld-ch/sitrep.git"
 SITREP_BRANCH="develop"
-SITREP_IMAGE="ghcr.io/f-eld-ch/sitrep:26.1.0"
+SITREP_IMAGE="ghcr.io/f-eld-ch/sitrep:latest"
 
 echo "=================================="
 echo "SitRep Image Preparation"
@@ -310,7 +310,7 @@ for image in $EXTERNAL_IMAGES; do
 done
 
 # Zusätzlich: Lade das vollständige SitRep Image (enthält UI + Server)
-SITREP_IMAGE="ghcr.io/f-eld-ch/sitrep:26.1.0"
+SITREP_IMAGE="ghcr.io/f-eld-ch/sitrep:latest"
 info "Lade vollständiges SitRep Image (mit UI)..."
 if $DOCKER_CMD pull "$SITREP_IMAGE"; then
     info "✓ SitRep Image geladen: $SITREP_IMAGE"
