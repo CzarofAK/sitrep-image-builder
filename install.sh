@@ -251,7 +251,7 @@ services:
       - sitrep
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
