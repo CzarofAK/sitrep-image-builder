@@ -211,7 +211,7 @@ name: sitrep
 services:
   # SitRep Frontend + Backend (vollständiges Image)
   sitrep:
-    image: ghcr.io/f-eld-ch/sitrep:26.1.0
+    image: ghcr.io/f-eld-ch/sitrep:latest
     ports:
       - "3000:8080"
     environment:
