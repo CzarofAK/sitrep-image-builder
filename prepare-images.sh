@@ -2,6 +2,7 @@
 set -e
 
 # SitRep Image Preparation Script
+# Optimiert für Ubuntu 24.04 LTS
 # Dieses Skript lädt alle benötigten Docker Images und speichert sie für Offline-Installation
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -24,14 +25,84 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; }
 info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
+# Funktion: Bytes in lesbare Größe umwandeln (Fallback für numfmt)
+human_readable_size() {
+    local bytes=$1
+    if command -v numfmt &> /dev/null; then
+        numfmt --to=iec "$bytes"
+    else
+        # Fallback ohne numfmt
+        if [ "$bytes" -ge 1073741824 ]; then
+            echo "$(( bytes / 1073741824 ))G"
+        elif [ "$bytes" -ge 1048576 ]; then
+            echo "$(( bytes / 1048576 ))M"
+        elif [ "$bytes" -ge 1024 ]; then
+            echo "$(( bytes / 1024 ))K"
+        else
+            echo "${bytes}B"
+        fi
+    fi
+}
+
+# Prüfe Ubuntu Version
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    info "Erkanntes System: $PRETTY_NAME"
+else
+    info "System: $(uname -s) $(uname -r)"
+fi
+echo ""
+
+# Funktion: Systemabhängigkeiten installieren
+install_dependencies() {
+    info "Prüfe Systemabhängigkeiten..."
+
+    local MISSING_DEPS=""
+
+    # Prüfe benötigte Pakete
+    command -v git &> /dev/null || MISSING_DEPS="$MISSING_DEPS git"
+    command -v curl &> /dev/null || MISSING_DEPS="$MISSING_DEPS curl"
+
+    if [ -n "$MISSING_DEPS" ]; then
+        info "Installiere fehlende Pakete:$MISSING_DEPS"
+        sudo apt-get update
+        sudo apt-get install -y $MISSING_DEPS
+    fi
+
+    info "✓ Alle Abhängigkeiten verfügbar"
+    echo ""
+}
+
+# Installiere Abhängigkeiten
+install_dependencies
+
 # Funktion: Docker installieren
 install_docker() {
     echo ""
-    info "Installiere Docker..."
+    info "Installiere Docker für Ubuntu..."
     echo ""
 
-    # Docker Installation via offizielles Script
-    curl -fsSL https://get.docker.com | sh
+    # Entferne alte Docker-Versionen falls vorhanden
+    sudo apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc 2>/dev/null || true
+
+    # Installiere Voraussetzungen
+    sudo apt-get update
+    sudo apt-get install -y ca-certificates curl gnupg
+
+    # Docker GPG Key hinzufügen
+    sudo install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+    # Docker Repository hinzufügen
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+      sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    # Docker installieren (inkl. Compose Plugin)
+    sudo apt-get update
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
     # Benutzer zur Docker-Gruppe hinzufügen
     sudo usermod -aG docker $USER
@@ -44,22 +115,14 @@ install_docker() {
     info "Docker wurde installiert!"
 }
 
-# Funktion: Docker-Compose installieren
+# Funktion: Docker-Compose installieren (als Plugin)
 install_docker_compose() {
     echo ""
-    info "Installiere Docker Compose..."
+    info "Installiere Docker Compose Plugin..."
     echo ""
 
-    # Versuche docker-compose-plugin zu installieren
-    if command -v apt-get &> /dev/null; then
-        sudo apt-get update
-        sudo apt-get install -y docker-compose-plugin
-    else
-        # Fallback: Standalone docker-compose
-        COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
-        sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-        sudo chmod +x /usr/local/bin/docker-compose
-    fi
+    sudo apt-get update
+    sudo apt-get install -y docker-compose-plugin
 
     echo ""
     info "Docker Compose wurde installiert!"
@@ -169,7 +232,7 @@ export_image() {
         # Prüfe ob Export erfolgreich war (Datei > 1KB)
         local filesize=$(stat -c%s "$IMAGES_DIR/${image_name}.tar.gz" 2>/dev/null || echo "0")
         if [ "$filesize" -gt 1000 ]; then
-            info "✓ Gespeichert: ${image_name}.tar.gz ($(numfmt --to=iec $filesize))"
+            info "✓ Gespeichert: ${image_name}.tar.gz ($(human_readable_size $filesize))"
             return 0
         else
             warn "⚠ Export fehlgeschlagen für $image (Datei zu klein)"
@@ -289,7 +352,7 @@ for f in "$IMAGES_DIR"/*.tar.gz; do
     if [ -f "$f" ]; then
         filesize=$(stat -c%s "$f" 2>/dev/null || echo "0")
         if [ "$filesize" -gt 1000 ]; then
-            echo "$(basename "$f") $(numfmt --to=iec $filesize)" >> "$IMAGES_DIR/image-list.txt"
+            echo "$(basename "$f") $(human_readable_size $filesize)" >> "$IMAGES_DIR/image-list.txt"
         fi
     fi
 done
