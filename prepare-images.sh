@@ -15,9 +15,51 @@ echo "=================================="
 echo ""
 
 # Farben
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Prüfe ob Docker installiert ist
+if ! command -v docker &> /dev/null; then
+    error "Docker ist nicht installiert!"
+    echo ""
+    echo "Bitte installiere Docker zuerst:"
+    echo "  curl -fsSL https://get.docker.com | sh"
+    echo "  sudo usermod -aG docker \$USER"
+    echo "  # Dann neu einloggen oder: newgrp docker"
+    echo ""
+    exit 1
+fi
+
+# Prüfe ob Docker-Compose installiert ist
+if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+    error "Docker Compose ist nicht installiert!"
+    echo ""
+    echo "Bitte installiere Docker Compose:"
+    echo "  sudo apt-get install docker-compose-plugin"
+    echo "  # Oder: sudo apt-get install docker-compose"
+    echo ""
+    exit 1
+fi
+
+# Prüfe ob Docker läuft
+if ! docker info &> /dev/null; then
+    error "Docker läuft nicht oder du hast keine Berechtigung!"
+    echo ""
+    echo "Versuche:"
+    echo "  sudo systemctl start docker"
+    echo "  # Oder füge deinen Benutzer zur Docker-Gruppe hinzu:"
+    echo "  sudo usermod -aG docker \$USER"
+    echo "  # Dann neu einloggen"
+    echo ""
+    exit 1
+fi
+
+echo -e "${GREEN}[OK]${NC} Docker ist verfügbar"
+echo ""
 
 info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }

@@ -52,7 +52,7 @@ sitrep-image-builder/
 
 ```bash
 # Repository klonen
-git clone https://github.com/yourusername/sitrep-image-builder.git
+git clone https://github.com/czarofak/sitrep-image-builder.git
 cd sitrep-image-builder
 
 # Docker-Images herunterladen (~3-5 GB, 20-60 Min.)
