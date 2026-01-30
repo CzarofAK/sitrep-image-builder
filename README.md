@@ -202,6 +202,52 @@ sudo nmcli device wifi connect "SSID" password "PASSWORD"
 ip addr show wlan0
 ```
 
+## Installation auf Proxmox VM
+
+SitRep kann auch auf einer Proxmox VM mit Ubuntu 24.04 LTS installiert werden.
+
+### VM-Anforderungen
+
+- Ubuntu 24.04 LTS (oder 22.04)
+- Mindestens 4GB RAM
+- 20GB+ Festplatte
+- **CPU-Typ: `host` oder `x86-64-v2`** (wichtig!)
+
+### CPU-Konfiguration (kritisch!)
+
+Das Hasura graphql-engine Image benötigt x86-64-v2 CPU-Instruktionen.
+Bei Standard-Proxmox-VMs fehlen diese oft.
+
+**Symptom:** Container startet mit Fehler:
+```
+Fatal glibc error: CPU does not support x86-64-v2
+```
+
+**Lösung:**
+1. VM herunterfahren
+2. In Proxmox Webinterface: **Datacenter -> Node -> VM -> Hardware -> Processor**
+3. CPU-Typ ändern von `kvm64` oder `qemu64` auf:
+   - `host` (empfohlen - nutzt alle Host-CPU-Features)
+   - oder `x86-64-v2` (Mindestanforderung)
+4. VM starten
+
+### Installation auf Proxmox VM
+
+```bash
+# 1. Repository klonen
+git clone https://github.com/czarofak/sitrep-image-builder.git
+cd sitrep-image-builder
+
+# 2. Docker Images vorbereiten (benötigt Internet)
+chmod +x prepare-images.sh
+./prepare-images.sh
+
+# 3. Installation starten
+sudo bash install.sh
+```
+
+**Hinweis:** Auf VMs ohne WiFi-Interface wird der Hotspot-Setup automatisch übersprungen.
+
 ## Troubleshooting
 
 ### WiFi Hotspot startet nicht
@@ -221,6 +267,24 @@ cd /opt/sitrep
 sudo docker-compose down
 sudo docker-compose up -d
 sudo docker-compose logs
+```
+
+### Hasura startet nicht (x86-64-v2 Fehler)
+
+**Fehlermeldung:**
+```
+Fatal glibc error: CPU does not support x86-64-v2
+```
+
+**Ursache:** Proxmox VM verwendet einen CPU-Typ ohne moderne Instruktionen.
+
+**Lösung:**
+```bash
+# Prüfe CPU-Features
+grep -E "cx16|lahf_lm|popcnt|sse4_1|sse4_2|ssse3" /proc/cpuinfo
+
+# Falls Features fehlen: VM herunterfahren und in Proxmox
+# CPU-Typ auf "host" oder "x86-64-v2" ändern
 ```
 
 ### Keine Verbindung zu SitRep möglich

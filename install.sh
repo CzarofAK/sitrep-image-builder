@@ -49,6 +49,48 @@ fi
 
 info "Architektur: $ARCH"
 
+# Check x86-64-v2 CPU support (required for newer Hasura images)
+check_x86_64_v2() {
+    if [[ "$ARCH" == "x86_64" ]]; then
+        # x86-64-v2 requires: cx16, lahf_lm, popcnt, sse4_1, sse4_2, ssse3
+        local required_flags="cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3"
+        local missing_flags=""
+
+        for flag in $required_flags; do
+            if ! grep -q " $flag" /proc/cpuinfo 2>/dev/null; then
+                missing_flags="$missing_flags $flag"
+            fi
+        done
+
+        if [ -n "$missing_flags" ]; then
+            echo ""
+            warn "=============================================="
+            warn "CPU unterstützt NICHT x86-64-v2!"
+            warn "Fehlende CPU-Features:$missing_flags"
+            warn "=============================================="
+            echo ""
+            warn "Das Hasura graphql-engine Image benötigt x86-64-v2."
+            echo ""
+            info "LÖSUNG für Proxmox VMs:"
+            echo "  1. VM herunterfahren"
+            echo "  2. In Proxmox: VM -> Hardware -> Processor"
+            echo "  3. CPU-Typ ändern auf 'host' oder 'x86-64-v2'"
+            echo "  4. VM neu starten und Installation wiederholen"
+            echo ""
+            read -p "Trotzdem fortfahren? (j/n): " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Jj]$ ]]; then
+                error "Installation abgebrochen. Bitte CPU-Konfiguration anpassen."
+            fi
+            warn "Fortfahren - Hasura wird möglicherweise nicht starten!"
+        else
+            info "CPU unterstützt x86-64-v2 ✓"
+        fi
+    fi
+}
+
+check_x86_64_v2
+
 # Installiere grundlegende Pakete (ohne Docker - wird separat geprüft)
 info "Installiere grundlegende Pakete..."
 apt-get update
