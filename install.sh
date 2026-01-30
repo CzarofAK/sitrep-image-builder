@@ -235,6 +235,7 @@ services:
     environment:
       HASURA_GRAPHQL_DATABASE_URL: postgres://postgres:\${POSTGRES_PASSWORD}@postgres:5432/postgres
       HASURA_GRAPHQL_METADATA_DATABASE_URL: postgres://postgres:\${POSTGRES_PASSWORD}@postgres:5432/postgres
+      PG_DATABASE_URL: postgres://postgres:\${POSTGRES_PASSWORD}@postgres:5432/postgres
       HASURA_GRAPHQL_ADMIN_SECRET: \${HASURA_GRAPHQL_ADMIN_SECRET}
       HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
       HASURA_GRAPHQL_DEV_MODE: "false"
