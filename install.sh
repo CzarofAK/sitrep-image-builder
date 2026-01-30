@@ -49,19 +49,39 @@ fi
 
 info "Architektur: $ARCH"
 
-# Installiere grundlegende Pakete
+# Installiere grundlegende Pakete (ohne Docker - wird separat geprüft)
 info "Installiere grundlegende Pakete..."
 apt-get update
-apt-get install -y \
-    hostapd \
-    dnsmasq \
-    iptables \
-    docker.io \
-    docker-compose \
-    avahi-daemon \
-    git \
-    curl \
-    jq
+
+# Prüfe ob Docker bereits installiert ist (z.B. docker-ce)
+if command -v docker &> /dev/null; then
+    info "Docker ist bereits installiert: $(docker --version)"
+    # Nur zusätzliche Pakete installieren
+    apt-get install -y \
+        avahi-daemon \
+        git \
+        curl \
+        jq
+else
+    # Docker noch nicht installiert - installiere docker.io
+    apt-get install -y \
+        docker.io \
+        docker-compose \
+        avahi-daemon \
+        git \
+        curl \
+        jq
+fi
+
+# WiFi-Pakete nur installieren wenn wlan0 existiert
+if ip link show wlan0 &> /dev/null; then
+    info "WiFi-Interface gefunden - installiere Hotspot-Pakete..."
+    apt-get install -y hostapd dnsmasq iptables
+    SETUP_HOTSPOT=true
+else
+    warn "Kein WiFi-Interface (wlan0) gefunden - überspringe Hotspot-Setup"
+    SETUP_HOTSPOT=false
+fi
 
 # Docker aktivieren
 info "Aktiviere Docker..."
@@ -180,9 +200,12 @@ networks:
     driver: bridge
 EOF
 
+# Hole aktuelle IP-Adresse für Dex Konfiguration
+CURRENT_IP=$(hostname -I | awk '{print $1}')
+
 # Erstelle Dex Konfiguration für lokale Auth
 info "Erstelle Dex Konfiguration..."
-cat > "$CONFIG_DIR/dex-config.yaml" <<'EOF'
+cat > "$CONFIG_DIR/dex-config.yaml" <<EOF
 issuer: http://dex:5556/dex
 
 storage:
@@ -196,8 +219,10 @@ web:
 staticClients:
 - id: sitrep-local
   redirectURIs:
-  - 'http://192.168.50.1:3000/oauth2/callback'
+  - 'http://${CURRENT_IP}:3000/oauth2/callback'
   - 'http://sitrep.local:3000/oauth2/callback'
+  - 'http://192.168.50.1:3000/oauth2/callback'
+  - 'http://localhost:3000/oauth2/callback'
   name: 'SitRep Emergency System'
   secret: sitrep-client-secret
 
@@ -205,11 +230,11 @@ enablePasswordDB: true
 
 staticPasswords:
 - email: "admin@sitrep.local"
-  hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"  # password: admin
+  hash: "\$2a\$10\$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"  # password: admin
   username: "admin"
   userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
 - email: "user@sitrep.local"
-  hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"  # password: admin
+  hash: "\$2a\$10\$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"  # password: admin
   username: "user"
   userID: "08a8684b-db88-4b73-90a9-3cd1661f5467"
 
@@ -225,24 +250,34 @@ EOF
 # Lade Docker Images (falls vorhanden)
 if [ -d "./docker-images" ]; then
     info "Lade vorbereitete Docker Images..."
-    for image in ./docker-images/*.tar; do
+    # Unterstütze sowohl .tar als auch .tar.gz Dateien
+    for image in ./docker-images/*.tar.gz ./docker-images/*.tar; do
         if [ -f "$image" ]; then
-            info "Lade $(basename $image)..."
-            docker load < "$image"
+            # Überspringe kleine/leere Dateien
+            filesize=$(stat -c%s "$image" 2>/dev/null || echo "0")
+            if [ "$filesize" -gt 1000 ]; then
+                info "Lade $(basename $image)..."
+                if [[ "$image" == *.tar.gz ]]; then
+                    gunzip -c "$image" | docker load
+                else
+                    docker load < "$image"
+                fi
+            fi
         fi
-    done
+    done 2>/dev/null || true
 else
     warn "Keine vorbereiteten Docker Images gefunden. Diese müssen online geladen werden."
 fi
 
-# WiFi Hotspot konfigurieren
-info "Konfiguriere WiFi Hotspot..."
+# WiFi Hotspot konfigurieren (nur wenn SETUP_HOTSPOT=true)
+if [ "$SETUP_HOTSPOT" = "true" ]; then
+    info "Konfiguriere WiFi Hotspot..."
 
-# Stoppe services
-systemctl stop hostapd dnsmasq 2>/dev/null || true
+    # Stoppe services
+    systemctl stop hostapd dnsmasq 2>/dev/null || true
 
-# Konfiguriere hostapd
-cat > /etc/hostapd/hostapd.conf <<EOF
+    # Konfiguriere hostapd
+    cat > /etc/hostapd/hostapd.conf <<EOF
 interface=wlan0
 driver=nl80211
 ssid=$HOTSPOT_SSID
@@ -259,11 +294,11 @@ wpa_pairwise=TKIP
 rsn_pairwise=CCMP
 EOF
 
-# Aktiviere hostapd
-sed -i 's|#DAEMON_CONF=""|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+    # Aktiviere hostapd
+    sed -i 's|#DAEMON_CONF=""|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
 
-# Konfiguriere dnsmasq
-cat > /etc/dnsmasq.conf <<EOF
+    # Konfiguriere dnsmasq
+    cat > /etc/dnsmasq.conf <<EOF
 interface=wlan0
 dhcp-range=192.168.50.10,192.168.50.100,255.255.255.0,24h
 domain=sitrep.local
@@ -272,17 +307,29 @@ address=/#/$HOTSPOT_IP
 # Captive Portal
 EOF
 
-# Konfiguriere statische IP für wlan0
-cat > /etc/network/interfaces.d/wlan0 <<EOF
+    # Konfiguriere statische IP für wlan0
+    cat > /etc/network/interfaces.d/wlan0 <<EOF
 auto wlan0
 iface wlan0 inet static
     address $HOTSPOT_IP
     netmask 255.255.255.0
 EOF
 
-# IP Forwarding aktivieren
-echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-sysctl -p
+    # IP Forwarding aktivieren
+    grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf || echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+    sysctl -p
+else
+    info "Überspringe WiFi Hotspot Konfiguration (kein wlan0)"
+fi
+
+# Bestimme Docker Compose Befehl
+if command -v docker-compose &> /dev/null; then
+    COMPOSE_CMD="/usr/bin/docker-compose"
+elif docker compose version &> /dev/null 2>&1; then
+    COMPOSE_CMD="/usr/bin/docker compose"
+else
+    COMPOSE_CMD="/usr/bin/docker-compose"
+fi
 
 # Erstelle systemd Service
 info "Erstelle Systemd Service..."
@@ -297,17 +344,18 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$INSTALL_DIR
 EnvironmentFile=$CONFIG_DIR/sitrep.env
-ExecStartPre=-/usr/bin/docker-compose down
-ExecStart=/usr/bin/docker-compose up -d
-ExecStop=/usr/bin/docker-compose down
+ExecStartPre=-$COMPOSE_CMD down
+ExecStart=$COMPOSE_CMD up -d
+ExecStop=$COMPOSE_CMD down
 TimeoutStartSec=0
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Erstelle Hotspot Service
-cat > /etc/systemd/system/sitrep-hotspot.service <<EOF
+# Erstelle Hotspot Service nur wenn WiFi vorhanden
+if [ "$SETUP_HOTSPOT" = "true" ]; then
+    cat > /etc/systemd/system/sitrep-hotspot.service <<EOF
 [Unit]
 Description=SitRep WiFi Hotspot
 After=network.target
@@ -325,20 +373,27 @@ ExecStop=/usr/bin/systemctl stop hostapd dnsmasq
 [Install]
 WantedBy=multi-user.target
 EOF
+fi
 
 # Aktiviere Services
 info "Aktiviere Services..."
 systemctl daemon-reload
 systemctl enable sitrep.service
-systemctl enable sitrep-hotspot.service
-systemctl enable hostapd
-systemctl enable dnsmasq
-systemctl unmask hostapd
+
+if [ "$SETUP_HOTSPOT" = "true" ]; then
+    systemctl enable sitrep-hotspot.service
+    systemctl enable hostapd
+    systemctl enable dnsmasq
+    systemctl unmask hostapd
+fi
 
 # Avahi für .local Domain
 info "Konfiguriere mDNS (Avahi)..."
 sed -i 's/#host-name=.*/host-name=sitrep/' /etc/avahi/avahi-daemon.conf
 systemctl enable avahi-daemon
+
+# Hole aktuelle IP-Adresse für INFO
+CURRENT_IP=$(hostname -I | awk '{print $1}')
 
 # Erstelle Info-Datei
 cat > "$INSTALL_DIR/INFO.txt" <<EOF
@@ -346,15 +401,32 @@ cat > "$INSTALL_DIR/INFO.txt" <<EOF
 SitRep Emergency System
 Offline Installation
 ========================================
+EOF
+
+if [ "$SETUP_HOTSPOT" = "true" ]; then
+cat >> "$INSTALL_DIR/INFO.txt" <<EOF
 
 WiFi Hotspot:
   SSID:     $HOTSPOT_SSID
   Password: $HOTSPOT_PASSWORD
   IP:       $HOTSPOT_IP
+EOF
+fi
+
+cat >> "$INSTALL_DIR/INFO.txt" <<EOF
 
 Zugriff:
-  Browser:  http://$HOTSPOT_IP:3000
+  Browser:  http://${CURRENT_IP}:3000
             http://sitrep.local:3000
+EOF
+
+if [ "$SETUP_HOTSPOT" = "true" ]; then
+cat >> "$INSTALL_DIR/INFO.txt" <<EOF
+            http://$HOTSPOT_IP:3000
+EOF
+fi
+
+cat >> "$INSTALL_DIR/INFO.txt" <<EOF
 
 Standard-Login:
   Benutzer: admin@sitrep.local
@@ -367,11 +439,12 @@ WICHTIG: Bitte Passwort nach erstem Login ändern!
 
 Services:
   sudo systemctl status sitrep
-  sudo systemctl status sitrep-hotspot
-  
+  sudo systemctl start sitrep
+  sudo systemctl stop sitrep
+
 Logs:
   sudo journalctl -u sitrep -f
-  sudo docker-compose -f $INSTALL_DIR/docker-compose.yml logs -f
+  cd $INSTALL_DIR && docker compose logs -f
 
 Konfiguration:
   $CONFIG_DIR/sitrep.env
@@ -388,7 +461,16 @@ info "Installation abgeschlossen!"
 echo ""
 cat "$INSTALL_DIR/INFO.txt"
 echo ""
-warn "System wird in 10 Sekunden neu gestartet..."
-warn "Nach dem Neustart können Sie sich mit dem WiFi '$HOTSPOT_SSID' verbinden"
-sleep 10
-reboot
+
+if [ "$SETUP_HOTSPOT" = "true" ]; then
+    warn "System wird in 10 Sekunden neu gestartet..."
+    warn "Nach dem Neustart können Sie sich mit dem WiFi '$HOTSPOT_SSID' verbinden"
+    sleep 10
+    reboot
+else
+    info "Starte SitRep Services..."
+    systemctl start sitrep
+    echo ""
+    info "SitRep ist jetzt erreichbar unter: http://${CURRENT_IP}:3000"
+    info "Oder: http://sitrep.local:3000"
+fi
