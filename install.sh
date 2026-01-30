@@ -240,7 +240,7 @@ services:
       HASURA_GRAPHQL_DEV_MODE: "false"
       HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup, http-log, webhook-log, websocket-log
       HASURA_GRAPHQL_UNAUTHORIZED_ROLE: anonymous
-      HASURA_GRAPHQL_JWT_SECRET: '{"jwk_url": "http://dex:5556/dex/keys", "header":{"type":"Authorization"}, "claims_map":{"x-hasura-user-id":{"path":"$$.sub"},"x-hasura-email":{"path":"$$.email"},"x-hasura-allowed-roles":["viewer","editor"],"x-hasura-default-role":"editor"}}'
+      HASURA_GRAPHQL_JWT_SECRET: '{"jwk_url": "http://dex:5556/dex/keys", "header":{"type":"Authorization"}, "claims_map":{"x-hasura-user-id":{"path":"\$.sub"},"x-hasura-email":{"path":"\$.email"},"x-hasura-allowed-roles":["viewer","editor"],"x-hasura-default-role":"editor"}}'
     depends_on:
       postgres:
         condition: service_healthy
